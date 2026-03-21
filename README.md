@@ -19,13 +19,25 @@ Restart OpenCode after adding the plugin.
 ## Usage
 
 ```
-/btw use the Edit tool instead of sed       # transient hint (auto-clears)
-/btw pin always use pnpm, not npm           # persistent hint (manual clear)
-/btw clear                                  # remove the current hint
-/btw                                        # show current hint + status
+/btw use the Edit tool instead of sed       # add transient hint (auto-clears)
+/btw pin always use pnpm, not npm           # add persistent hint (manual clear)
+/btw clear                                  # remove all hints
+/btw clear last                             # remove the most recently added hint
+/btw                                        # show all active hints
 ```
 
-A confirmation message appears in the chat after each command. The model does not see this confirmation — only the hint itself (via the system prompt).
+A confirmation message appears in the chat after each command. The model does not see this confirmation — only the hints themselves (via the system prompt).
+
+### Stacking hints
+
+Hints stack — each `/btw` adds to the list rather than replacing. This lets you layer corrections:
+
+```
+/btw pin always use TypeScript              # persistent base hint
+/btw fix the bug in auth.ts first           # transient nudge on top
+```
+
+After the model finishes its turn, the transient hint auto-clears while the pinned one remains.
 
 ### Transient vs. pinned hints
 
@@ -35,9 +47,9 @@ A confirmation message appears in the chat after each command. The model does no
 ## How it works
 
 1. `/btw <hint>` saves the hint to a file on disk and cancels the command before an LLM call is made
-2. On every subsequent LLM call, the `experimental.chat.system.transform` hook reads the hint and appends it to the system prompt
-3. When the model's turn finishes (`session.idle` event), transient hints are automatically removed
-4. `/btw clear` removes any hint (transient or pinned)
+2. On every subsequent LLM call, the `experimental.chat.system.transform` hook reads all hints and appends them to the system prompt
+3. When the model's turn finishes (`session.idle` event), transient hints are automatically removed while pinned hints stay
+4. `/btw clear` removes all hints, `/btw clear last` removes the most recent one
 
 Hints are **session-scoped** (each session has its own) and **project-scoped** (stored under a hash of the project directory). All data lives in `~/.cache/opencode/btw/`. Hint files are cleaned up automatically when sessions are deleted.
 
@@ -52,7 +64,7 @@ Hints are **session-scoped** (each session has its own) and **project-scoped** (
 ## Development
 
 ```bash
-bun test        # run test suite (51 tests)
+bun test        # run test suite
 ```
 
 ## License

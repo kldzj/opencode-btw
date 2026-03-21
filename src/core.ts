@@ -1,13 +1,17 @@
 import { createHash } from "crypto"
 import { mkdirSync, unlinkSync } from "fs"
 
-export interface HintData {
+export interface HintEntry {
   text: string
   pinned: boolean
 }
 
+export interface HintFile {
+  hints: HintEntry[]
+}
+
 export type ParsedCommand =
-  | { action: "clear" }
+  | { action: "clear"; which: "all" | "last" }
   | { action: "status" }
   | { action: "set"; text: string; pinned: boolean }
   | { action: "error"; message: string }
@@ -44,35 +48,75 @@ export function ensureDir(dir: string): void {
   } catch {}
 }
 
-export async function readHint(filePath: string): Promise<HintData | null> {
+export async function readHints(filePath: string): Promise<HintEntry[]> {
   try {
     const file = Bun.file(filePath)
     if (await file.exists()) {
       const data = await file.json()
-      if (data?.text) return data as HintData
+      // Handle new array format
+      if (Array.isArray(data?.hints) && data.hints.length > 0) {
+        return data.hints as HintEntry[]
+      }
+      // Handle legacy single-hint format
+      if (data?.text) {
+        return [{ text: data.text, pinned: data.pinned ?? false }]
+      }
     }
   } catch {}
-  return null
+  return []
 }
 
-export async function writeHint(
+export async function writeHints(
   filePath: string,
-  data: HintData,
+  hints: HintEntry[],
 ): Promise<void> {
-  await Bun.write(filePath, JSON.stringify(data))
+  if (hints.length === 0) {
+    await clearHints(filePath)
+    return
+  }
+  await Bun.write(filePath, JSON.stringify({ hints } satisfies HintFile))
 }
 
-export async function clearHint(filePath: string): Promise<void> {
+export async function addHint(
+  filePath: string,
+  entry: HintEntry,
+): Promise<void> {
+  const existing = await readHints(filePath)
+  existing.push(entry)
+  await writeHints(filePath, existing)
+}
+
+export async function clearHints(filePath: string): Promise<void> {
   try {
     unlinkSync(filePath)
   } catch {}
+}
+
+export async function removeTransient(filePath: string): Promise<boolean> {
+  const hints = await readHints(filePath)
+  const pinned = hints.filter((h) => h.pinned)
+  if (pinned.length === hints.length) return false // nothing removed
+  await writeHints(filePath, pinned)
+  return true
+}
+
+export async function removeLast(filePath: string): Promise<HintEntry | null> {
+  const hints = await readHints(filePath)
+  if (hints.length === 0) return null
+  const removed = hints.pop()!
+  await writeHints(filePath, hints)
+  return removed
 }
 
 export function parseCommand(rawArgs: string): ParsedCommand {
   const args = rawArgs.trim()
 
   if (args === "clear" || args === "reset") {
-    return { action: "clear" }
+    return { action: "clear", which: "all" }
+  }
+
+  if (args === "clear last") {
+    return { action: "clear", which: "last" }
   }
 
   if (!args) {
@@ -90,12 +134,10 @@ export function parseCommand(rawArgs: string): ParsedCommand {
   return { action: "set", text: args, pinned: false }
 }
 
-export function buildSystemBlock(hint: HintData): string {
-  return [
-    BTW_SYSTEM_INSTRUCTIONS,
-    "",
-    "<btw-active-hint>",
-    hint.text,
-    "</btw-active-hint>",
-  ].join("\n")
+export function buildSystemBlock(hints: HintEntry[]): string {
+  if (hints.length === 0) return ""
+  const hintBlocks = hints
+    .map((h) => `<btw-active-hint>\n${h.text}\n</btw-active-hint>`)
+    .join("\n\n")
+  return [BTW_SYSTEM_INSTRUCTIONS, "", hintBlocks].join("\n")
 }

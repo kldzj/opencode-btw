@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
-import { BTW_HANDLED, readHint, writeHint } from "./core"
+import { BTW_HANDLED, readHints, writeHints } from "./core"
 import { BtwPlugin } from "./plugin"
 
 // ─── Test Helpers ────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ describe("BtwPlugin factory", () => {
       expect(thrown!.message).toBe(BTW_HANDLED)
     })
 
-    test("writes transient hint file on /btw <text>", async () => {
+    test("adds transient hint on /btw <text>", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
@@ -118,15 +118,14 @@ describe("BtwPlugin factory", () => {
         )
       } catch {}
 
-      // Find the hint file - it's in the btw cache dir for this test directory
       const { btwDir, hintPath } = await import("./core")
       const dir = btwDir(testDir)
-      const data = await readHint(hintPath(dir, "s1"))
+      const hints = await readHints(hintPath(dir, "s1"))
 
-      expect(data).toEqual({ text: "focus on auth", pinned: false })
+      expect(hints).toEqual([{ text: "focus on auth", pinned: false }])
     })
 
-    test("writes pinned hint file on /btw pin <text>", async () => {
+    test("adds pinned hint on /btw pin <text>", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
@@ -139,20 +138,51 @@ describe("BtwPlugin factory", () => {
 
       const { btwDir, hintPath } = await import("./core")
       const dir = btwDir(testDir)
-      const data = await readHint(hintPath(dir, "s1"))
+      const hints = await readHints(hintPath(dir, "s1"))
 
-      expect(data).toEqual({ text: "always use TypeScript", pinned: true })
+      expect(hints).toEqual([{ text: "always use TypeScript", pinned: true }])
     })
 
-    test("clears hint on /btw clear", async () => {
+    test("stacks multiple hints", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
-      // Set a hint first
-      const { btwDir, hintPath, writeHint } = await import("./core")
+      try {
+        await handler(
+          { command: "btw", sessionID: "s1", arguments: "pin use TypeScript" },
+          { parts: [] },
+        )
+      } catch {}
+
+      try {
+        await handler(
+          { command: "btw", sessionID: "s1", arguments: "also add JSDoc" },
+          { parts: [] },
+        )
+      } catch {}
+
+      const { btwDir, hintPath } = await import("./core")
+      const dir = btwDir(testDir)
+      const hints = await readHints(hintPath(dir, "s1"))
+
+      expect(hints).toEqual([
+        { text: "use TypeScript", pinned: true },
+        { text: "also add JSDoc", pinned: false },
+      ])
+    })
+
+    test("clears all hints on /btw clear", async () => {
+      const hooks = await createPlugin()
+      const handler = hooks["command.execute.before"]!
+
+      // Set two hints
+      const { btwDir, hintPath, writeHints } = await import("./core")
       const dir = btwDir(testDir)
       mkdirSync(dir, { recursive: true })
-      await writeHint(hintPath(dir, "s1"), { text: "old hint", pinned: false })
+      await writeHints(hintPath(dir, "s1"), [
+        { text: "hint 1", pinned: false },
+        { text: "hint 2", pinned: true },
+      ])
 
       try {
         await handler(
@@ -161,11 +191,56 @@ describe("BtwPlugin factory", () => {
         )
       } catch {}
 
-      const data = await readHint(hintPath(dir, "s1"))
-      expect(data).toBeNull()
+      const hints = await readHints(hintPath(dir, "s1"))
+      expect(hints).toEqual([])
     })
 
-    test("sends visible message for set hint", async () => {
+    test("clears last hint on /btw clear last", async () => {
+      const hooks = await createPlugin()
+      const handler = hooks["command.execute.before"]!
+
+      // Set two hints
+      const { btwDir, hintPath, writeHints } = await import("./core")
+      const dir = btwDir(testDir)
+      mkdirSync(dir, { recursive: true })
+      await writeHints(hintPath(dir, "s1"), [
+        { text: "hint 1", pinned: true },
+        { text: "hint 2", pinned: false },
+      ])
+
+      try {
+        await handler(
+          { command: "btw", sessionID: "s1", arguments: "clear last" },
+          { parts: [] },
+        )
+      } catch {}
+
+      const hints = await readHints(hintPath(dir, "s1"))
+      expect(hints).toEqual([{ text: "hint 1", pinned: true }])
+    })
+
+    test("sends visible message with removed hint text on clear last", async () => {
+      const hooks = await createPlugin()
+      const handler = hooks["command.execute.before"]!
+
+      // Set a hint
+      const { btwDir, hintPath, writeHints } = await import("./core")
+      const dir = btwDir(testDir)
+      mkdirSync(dir, { recursive: true })
+      await writeHints(hintPath(dir, "s1"), [{ text: "my hint", pinned: false }])
+
+      try {
+        await handler(
+          { command: "btw", sessionID: "s1", arguments: "clear last" },
+          { parts: [] },
+        )
+      } catch {}
+
+      const lastCall = mockClient.promptCalls[mockClient.promptCalls.length - 1]
+      expect(lastCall.body.parts[0].text).toContain("my hint")
+    })
+
+    test("sends visible message for added hint", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
@@ -180,11 +255,11 @@ describe("BtwPlugin factory", () => {
       const lastCall = mockClient.promptCalls[mockClient.promptCalls.length - 1]
       expect(lastCall.body.noReply).toBe(true)
       expect(lastCall.body.parts[0].ignored).toBe(true)
-      expect(lastCall.body.parts[0].text).toContain("Hint set")
+      expect(lastCall.body.parts[0].text).toContain("added")
       expect(lastCall.body.parts[0].text).toContain("test message")
     })
 
-    test("sends status message when no hint is set", async () => {
+    test("sends status message when no hints are set", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
@@ -196,25 +271,29 @@ describe("BtwPlugin factory", () => {
       } catch {}
 
       const lastCall = mockClient.promptCalls[mockClient.promptCalls.length - 1]
-      expect(lastCall.body.parts[0].text).toContain("No hint set")
+      expect(lastCall.body.parts[0].text).toContain("No hints set")
     })
 
-    test("sends status with current hint when one exists", async () => {
+    test("sends status listing all hints when some exist", async () => {
       const hooks = await createPlugin()
       const handler = hooks["command.execute.before"]!
 
-      // Set a hint first
+      // Set two hints
       try {
         await handler(
-          { command: "btw", sessionID: "s1", arguments: "my hint" },
+          { command: "btw", sessionID: "s1", arguments: "pin first" },
+          { parts: [] },
+        )
+      } catch {}
+      try {
+        await handler(
+          { command: "btw", sessionID: "s1", arguments: "second" },
           { parts: [] },
         )
       } catch {}
 
-      // Reset call tracking
       mockClient.promptCalls.length = 0
 
-      // Check status
       try {
         await handler(
           { command: "btw", sessionID: "s1", arguments: "" },
@@ -223,15 +302,19 @@ describe("BtwPlugin factory", () => {
       } catch {}
 
       const lastCall = mockClient.promptCalls[mockClient.promptCalls.length - 1]
-      expect(lastCall.body.parts[0].text).toContain("transient")
-      expect(lastCall.body.parts[0].text).toContain("my hint")
+      const text = lastCall.body.parts[0].text
+      expect(text).toContain("Active hints")
+      expect(text).toContain("[pinned]")
+      expect(text).toContain("[transient]")
+      expect(text).toContain("first")
+      expect(text).toContain("second")
     })
   })
 
   // ─── System Transform ─────────────────────────────────────────────
 
   describe("experimental.chat.system.transform", () => {
-    test("does nothing when no hint exists", async () => {
+    test("does nothing when no hints exist", async () => {
       const hooks = await createPlugin()
       const handler = hooks["experimental.chat.system.transform"]!
 
@@ -241,7 +324,7 @@ describe("BtwPlugin factory", () => {
       expect(output.system).toEqual(["existing prompt"])
     })
 
-    test("appends hint block when hint exists", async () => {
+    test("appends hint block when hints exist", async () => {
       const hooks = await createPlugin()
 
       // Set a hint via the command handler
@@ -262,6 +345,31 @@ describe("BtwPlugin factory", () => {
       expect(output.system[1]).toContain("</btw-active-hint>")
     })
 
+    test("renders multiple hints as separate blocks", async () => {
+      const hooks = await createPlugin()
+
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "pin first" },
+          { parts: [] },
+        )
+      } catch {}
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "second" },
+          { parts: [] },
+        )
+      } catch {}
+
+      const handler = hooks["experimental.chat.system.transform"]!
+      const output = { system: ["existing prompt"] }
+      await handler({ sessionID: "s1" } as any, output)
+
+      expect(output.system.length).toBe(2)
+      const matches = output.system[1].match(/<btw-active-hint>\n/g)
+      expect(matches?.length).toBe(2)
+    })
+
     test("does nothing without sessionID", async () => {
       const hooks = await createPlugin()
       const handler = hooks["experimental.chat.system.transform"]!
@@ -276,7 +384,7 @@ describe("BtwPlugin factory", () => {
   // ─── Event Hook ────────────────────────────────────────────────────
 
   describe("event hook", () => {
-    test("auto-clears transient hint on session.idle", async () => {
+    test("auto-clears transient hints on session.idle", async () => {
       const hooks = await createPlugin()
 
       // Set a transient hint
@@ -297,11 +405,11 @@ describe("BtwPlugin factory", () => {
 
       // Hint should be cleared
       const { btwDir, hintPath } = await import("./core")
-      const data = await readHint(hintPath(btwDir(testDir), "s1"))
-      expect(data).toBeNull()
+      const hints = await readHints(hintPath(btwDir(testDir), "s1"))
+      expect(hints).toEqual([])
     })
 
-    test("does NOT clear pinned hint on session.idle", async () => {
+    test("keeps pinned hints on session.idle", async () => {
       const hooks = await createPlugin()
 
       // Set a pinned hint
@@ -320,16 +428,96 @@ describe("BtwPlugin factory", () => {
         } as any,
       })
 
-      // Hint should still exist
+      // Pinned hint should still exist
       const { btwDir, hintPath } = await import("./core")
-      const data = await readHint(hintPath(btwDir(testDir), "s1"))
-      expect(data).toEqual({ text: "stay forever", pinned: true })
+      const hints = await readHints(hintPath(btwDir(testDir), "s1"))
+      expect(hints).toEqual([{ text: "stay forever", pinned: true }])
+    })
+
+    test("removes only transient from mixed hints on session.idle", async () => {
+      const hooks = await createPlugin()
+
+      // Set mixed hints
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "pin persistent" },
+          { parts: [] },
+        )
+      } catch {}
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "temporary" },
+          { parts: [] },
+        )
+      } catch {}
+
+      // Fire session.idle event
+      await hooks.event!({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "s1" },
+        } as any,
+      })
+
+      const { btwDir, hintPath } = await import("./core")
+      const hints = await readHints(hintPath(btwDir(testDir), "s1"))
+      expect(hints).toEqual([{ text: "persistent", pinned: true }])
+    })
+
+    test("sends auto-clear message on session.idle", async () => {
+      const hooks = await createPlugin()
+
+      // Set a transient hint
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "will auto-clear" },
+          { parts: [] },
+        )
+      } catch {}
+
+      mockClient.promptCalls.length = 0
+
+      // Fire session.idle event
+      await hooks.event!({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "s1" },
+        } as any,
+      })
+
+      expect(mockClient.promptCalls.length).toBe(1)
+      expect(mockClient.promptCalls[0].body.parts[0].text).toContain("auto-cleared")
+    })
+
+    test("does NOT send auto-clear message when only pinned hints exist", async () => {
+      const hooks = await createPlugin()
+
+      // Set a pinned hint only
+      try {
+        await hooks["command.execute.before"]!(
+          { command: "btw", sessionID: "s1", arguments: "pin persistent" },
+          { parts: [] },
+        )
+      } catch {}
+
+      mockClient.promptCalls.length = 0
+
+      // Fire session.idle event
+      await hooks.event!({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "s1" },
+        } as any,
+      })
+
+      // No auto-clear message should be sent
+      expect(mockClient.promptCalls.length).toBe(0)
     })
 
     test("cleans up on session.deleted", async () => {
       const hooks = await createPlugin()
 
-      // Set a hint
+      // Set hints
       try {
         await hooks["command.execute.before"]!(
           { command: "btw", sessionID: "s1", arguments: "pin important" },
@@ -345,7 +533,7 @@ describe("BtwPlugin factory", () => {
         } as any,
       })
 
-      // Hint should be removed
+      // File should be removed
       const { btwDir, hintPath } = await import("./core")
       const filePath = hintPath(btwDir(testDir), "s1")
       expect(existsSync(filePath)).toBe(false)

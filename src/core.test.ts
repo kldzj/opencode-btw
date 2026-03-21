@@ -4,15 +4,18 @@ import { tmpdir } from "os"
 import { join } from "path"
 
 import {
-  type HintData,
+  type HintEntry,
   BTW_HANDLED,
   BTW_SYSTEM_INSTRUCTIONS,
   projectHash,
   btwDir,
   hintPath,
-  readHint,
-  writeHint,
-  clearHint,
+  readHints,
+  writeHints,
+  addHint,
+  clearHints,
+  removeTransient,
+  removeLast,
   parseCommand,
   buildSystemBlock,
   ensureDir,
@@ -62,16 +65,20 @@ describe("hintPath", () => {
 // ─── Command Parsing ─────────────────────────────────────────────────
 
 describe("parseCommand", () => {
-  test('returns clear action for "clear"', () => {
-    expect(parseCommand("clear")).toEqual({ action: "clear" })
+  test('returns clear all for "clear"', () => {
+    expect(parseCommand("clear")).toEqual({ action: "clear", which: "all" })
   })
 
-  test('returns clear action for "reset"', () => {
-    expect(parseCommand("reset")).toEqual({ action: "clear" })
+  test('returns clear all for "reset"', () => {
+    expect(parseCommand("reset")).toEqual({ action: "clear", which: "all" })
+  })
+
+  test('returns clear last for "clear last"', () => {
+    expect(parseCommand("clear last")).toEqual({ action: "clear", which: "last" })
   })
 
   test("trims whitespace before matching", () => {
-    expect(parseCommand("  clear  ")).toEqual({ action: "clear" })
+    expect(parseCommand("  clear  ")).toEqual({ action: "clear", which: "all" })
   })
 
   test("returns status action for empty string", () => {
@@ -142,29 +149,62 @@ describe("parseCommand", () => {
       pinned: false,
     })
   })
+
+  test("treats 'clear last' literally", () => {
+    expect(parseCommand("clear last")).toEqual({ action: "clear", which: "last" })
+  })
+
+  test("treats 'clear something' as a set action", () => {
+    // "clear something" is not a recognized clear variant, it's a hint
+    // Actually no — "clear" exact match vs longer. Let me check.
+    // parseCommand trims, checks exact "clear" or "reset", then "clear last".
+    // "clear something" would not match any of those, so it falls through to set.
+    expect(parseCommand("clear something")).toEqual({
+      action: "set",
+      text: "clear something",
+      pinned: false,
+    })
+  })
 })
 
 // ─── System Prompt Construction ──────────────────────────────────────
 
 describe("buildSystemBlock", () => {
-  test("includes system instructions", () => {
-    const block = buildSystemBlock({ text: "test hint", pinned: false })
+  test("returns empty string for no hints", () => {
+    expect(buildSystemBlock([])).toBe("")
+  })
+
+  test("includes system instructions for single hint", () => {
+    const block = buildSystemBlock([{ text: "test hint", pinned: false }])
     expect(block).toContain(BTW_SYSTEM_INSTRUCTIONS)
   })
 
-  test("wraps hint in btw-active-hint tags", () => {
-    const block = buildSystemBlock({ text: "use Edit tool", pinned: false })
+  test("wraps single hint in btw-active-hint tags", () => {
+    const block = buildSystemBlock([{ text: "use Edit tool", pinned: false }])
     expect(block).toContain("<btw-active-hint>")
     expect(block).toContain("use Edit tool")
     expect(block).toContain("</btw-active-hint>")
   })
 
-  test("includes the exact hint text", () => {
-    const block = buildSystemBlock({
-      text: "focus on src/auth.ts",
-      pinned: true,
-    })
-    expect(block).toContain("focus on src/auth.ts")
+  test("renders multiple hints as separate blocks", () => {
+    const block = buildSystemBlock([
+      { text: "hint one", pinned: false },
+      { text: "hint two", pinned: true },
+    ])
+    // Match opening tags with newline (not the mention in instructions)
+    const matches = block.match(/<btw-active-hint>\n/g)
+    expect(matches?.length).toBe(2)
+    expect(block).toContain("hint one")
+    expect(block).toContain("hint two")
+  })
+
+  test("includes system instructions only once for multiple hints", () => {
+    const block = buildSystemBlock([
+      { text: "a", pinned: false },
+      { text: "b", pinned: false },
+    ])
+    const matches = block.match(/<btw-hint-system>/g)
+    expect(matches?.length).toBe(1)
   })
 })
 
@@ -190,73 +230,204 @@ describe("hint file I/O", () => {
     rmSync(testDir, { recursive: true, force: true })
   })
 
-  test("writeHint creates a JSON file", async () => {
+  test("writeHints creates a JSON file with hints array", async () => {
     const filePath = join(testDir, "session-1.json")
-    await writeHint(filePath, { text: "test hint", pinned: false })
+    await writeHints(filePath, [{ text: "test hint", pinned: false }])
 
     const raw = readFileSync(filePath, "utf-8")
     const data = JSON.parse(raw)
-    expect(data).toEqual({ text: "test hint", pinned: false })
+    expect(data).toEqual({ hints: [{ text: "test hint", pinned: false }] })
   })
 
-  test("readHint reads back written data", async () => {
+  test("readHints reads back written data", async () => {
     const filePath = join(testDir, "session-1.json")
-    await writeHint(filePath, { text: "hello", pinned: true })
+    await writeHints(filePath, [{ text: "hello", pinned: true }])
 
-    const result = await readHint(filePath)
-    expect(result).toEqual({ text: "hello", pinned: true })
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "hello", pinned: true }])
   })
 
-  test("readHint returns null for non-existent file", async () => {
-    const result = await readHint(join(testDir, "missing.json"))
-    expect(result).toBeNull()
+  test("readHints returns empty array for non-existent file", async () => {
+    const result = await readHints(join(testDir, "missing.json"))
+    expect(result).toEqual([])
   })
 
-  test("readHint returns null for invalid JSON", async () => {
+  test("readHints returns empty array for invalid JSON", async () => {
     const filePath = join(testDir, "bad.json")
     await Bun.write(filePath, "not valid json{{{")
 
-    const result = await readHint(filePath)
-    expect(result).toBeNull()
+    const result = await readHints(filePath)
+    expect(result).toEqual([])
   })
 
-  test("readHint returns null for JSON without text field", async () => {
+  test("readHints handles legacy single-hint format", async () => {
+    const filePath = join(testDir, "legacy.json")
+    await Bun.write(filePath, JSON.stringify({ text: "old format", pinned: true }))
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "old format", pinned: true }])
+  })
+
+  test("readHints returns empty for legacy format without text", async () => {
     const filePath = join(testDir, "empty.json")
     await Bun.write(filePath, JSON.stringify({ pinned: true }))
 
-    const result = await readHint(filePath)
-    expect(result).toBeNull()
+    const result = await readHints(filePath)
+    expect(result).toEqual([])
   })
 
-  test("readHint returns null for empty text", async () => {
-    const filePath = join(testDir, "empty-text.json")
-    await Bun.write(filePath, JSON.stringify({ text: "", pinned: false }))
+  test("readHints returns empty for empty hints array", async () => {
+    const filePath = join(testDir, "empty-array.json")
+    await Bun.write(filePath, JSON.stringify({ hints: [] }))
 
-    const result = await readHint(filePath)
-    expect(result).toBeNull()
+    const result = await readHints(filePath)
+    expect(result).toEqual([])
   })
 
-  test("clearHint removes the file", async () => {
+  test("addHint appends to existing hints", async () => {
     const filePath = join(testDir, "session-1.json")
-    await writeHint(filePath, { text: "test", pinned: false })
+    await writeHints(filePath, [{ text: "first", pinned: false }])
+    await addHint(filePath, { text: "second", pinned: true })
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([
+      { text: "first", pinned: false },
+      { text: "second", pinned: true },
+    ])
+  })
+
+  test("addHint creates file if none exists", async () => {
+    const filePath = join(testDir, "new.json")
+    await addHint(filePath, { text: "first", pinned: false })
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "first", pinned: false }])
+  })
+
+  test("writeHints with empty array removes file", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "test", pinned: false }])
     expect(existsSync(filePath)).toBe(true)
 
-    await clearHint(filePath)
+    await writeHints(filePath, [])
     expect(existsSync(filePath)).toBe(false)
   })
 
-  test("clearHint is safe on non-existent file", async () => {
-    // Should not throw
-    await clearHint(join(testDir, "missing.json"))
+  test("clearHints removes the file", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "test", pinned: false }])
+    expect(existsSync(filePath)).toBe(true)
+
+    await clearHints(filePath)
+    expect(existsSync(filePath)).toBe(false)
   })
 
-  test("writeHint overwrites existing hint", async () => {
-    const filePath = join(testDir, "session-1.json")
-    await writeHint(filePath, { text: "first", pinned: false })
-    await writeHint(filePath, { text: "second", pinned: true })
+  test("clearHints is safe on non-existent file", async () => {
+    // Should not throw
+    await clearHints(join(testDir, "missing.json"))
+  })
+})
 
-    const result = await readHint(filePath)
-    expect(result).toEqual({ text: "second", pinned: true })
+// ─── removeTransient ─────────────────────────────────────────────────
+
+describe("removeTransient", () => {
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `btw-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(testDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  test("removes only transient hints, keeps pinned", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [
+      { text: "transient", pinned: false },
+      { text: "pinned", pinned: true },
+      { text: "also transient", pinned: false },
+    ])
+
+    const removed = await removeTransient(filePath)
+    expect(removed).toBe(true)
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "pinned", pinned: true }])
+  })
+
+  test("returns false if all hints are pinned", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "pinned", pinned: true }])
+
+    const removed = await removeTransient(filePath)
+    expect(removed).toBe(false)
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "pinned", pinned: true }])
+  })
+
+  test("removes file when all hints are transient", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [
+      { text: "a", pinned: false },
+      { text: "b", pinned: false },
+    ])
+
+    const removed = await removeTransient(filePath)
+    expect(removed).toBe(true)
+    expect(existsSync(filePath)).toBe(false)
+  })
+
+  test("returns false for empty/missing file", async () => {
+    const filePath = join(testDir, "missing.json")
+    const removed = await removeTransient(filePath)
+    expect(removed).toBe(false)
+  })
+})
+
+// ─── removeLast ──────────────────────────────────────────────────────
+
+describe("removeLast", () => {
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `btw-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(testDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  test("removes and returns the last hint", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [
+      { text: "first", pinned: false },
+      { text: "second", pinned: true },
+    ])
+
+    const removed = await removeLast(filePath)
+    expect(removed).toEqual({ text: "second", pinned: true })
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "first", pinned: false }])
+  })
+
+  test("removes file when last hint is removed", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "only", pinned: false }])
+
+    const removed = await removeLast(filePath)
+    expect(removed).toEqual({ text: "only", pinned: false })
+    expect(existsSync(filePath)).toBe(false)
+  })
+
+  test("returns null for empty/missing file", async () => {
+    const filePath = join(testDir, "missing.json")
+    const removed = await removeLast(filePath)
+    expect(removed).toBeNull()
   })
 })
 

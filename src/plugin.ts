@@ -1,16 +1,17 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 import {
-  type HintData,
   BTW_HANDLED,
-  btwDir,
+  addHint,
   buildSystemBlock,
-  clearHint,
+  btwDir,
+  clearHints,
   ensureDir,
   hintPath,
   parseCommand,
-  readHint,
-  writeHint,
+  readHints,
+  removeLast,
+  removeTransient,
 } from "./core"
 
 // btw — inject hints into the model's context without sending a new message.
@@ -18,14 +19,14 @@ import {
 // Uses three hooks:
 //   1. command.execute.before — intercepts /btw, saves hint, throws sentinel
 //      to cancel the LLM call entirely.
-//   2. experimental.chat.system.transform — appends hint to the system prompt
+//   2. experimental.chat.system.transform — appends hints to the system prompt
 //      on every LLM call (including tool-loop iterations).
 //   3. event — listens for session.idle to auto-clear transient hints, and
 //      session.deleted to clean up hint files.
 //
 // File layout:
 //   ~/.cache/opencode/btw/<project-hash>/
-//     <sessionID>.json       # { text, pinned }
+//     <sessionID>.json       # { hints: [{ text, pinned }] }
 
 export const BtwPlugin: Plugin = async ({ directory, client }) => {
   const dir = btwDir(directory)
@@ -50,7 +51,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       ;(config as any).command = (config as any).command ?? {}
       ;(config as any).command["btw"] = {
         description:
-          "Inject a hint into the model's context (auto-clears after one turn, use 'pin' to persist)",
+          "Inject a hint into the model's context (stacks; transient by default, use 'pin' to persist)",
         template: "$ARGUMENTS",
       }
     },
@@ -61,10 +62,9 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
         const sessionID = (event as any).properties?.sessionID
         if (typeof sessionID !== "string") return
 
-        const data = await readHint(hint(sessionID))
-        if (data && !data.pinned) {
-          await clearHint(hint(sessionID))
-          await sendVisibleMessage(sessionID, "[btw] Hint auto-cleared")
+        const removed = await removeTransient(hint(sessionID))
+        if (removed) {
+          await sendVisibleMessage(sessionID, "[btw] Transient hints auto-cleared")
         }
       }
 
@@ -72,7 +72,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       if (event.type === "session.deleted") {
         const sessionID = (event as any).properties?.sessionID
         if (typeof sessionID === "string") {
-          await clearHint(hint(sessionID))
+          await clearHints(hint(sessionID))
         }
       }
     },
@@ -85,20 +85,35 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
 
       switch (parsed.action) {
         case "clear":
-          await clearHint(hint(sessionID))
-          await sendVisibleMessage(sessionID, "[btw] Hint cleared")
+          if (parsed.which === "last") {
+            const removed = await removeLast(hint(sessionID))
+            if (removed) {
+              await sendVisibleMessage(
+                sessionID,
+                `[btw] Removed last hint: "${removed.text}"`,
+              )
+            } else {
+              await sendVisibleMessage(sessionID, "[btw] No hints to remove")
+            }
+          } else {
+            await clearHints(hint(sessionID))
+            await sendVisibleMessage(sessionID, "[btw] All hints cleared")
+          }
           throw new Error(BTW_HANDLED)
 
         case "status": {
-          const data = await readHint(hint(sessionID))
-          if (data) {
-            const label = data.pinned ? "pinned" : "transient"
+          const hints = await readHints(hint(sessionID))
+          if (hints.length === 0) {
+            await sendVisibleMessage(sessionID, "[btw] No hints set")
+          } else {
+            const lines = hints.map((h, i) => {
+              const label = h.pinned ? "pinned" : "transient"
+              return `  ${i + 1}. [${label}] "${h.text}"`
+            })
             await sendVisibleMessage(
               sessionID,
-              `[btw] Current hint (${label}): "${data.text}"`,
+              `[btw] Active hints:\n${lines.join("\n")}`,
             )
-          } else {
-            await sendVisibleMessage(sessionID, "[btw] No hint set")
           }
           throw new Error(BTW_HANDLED)
         }
@@ -108,14 +123,14 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
           throw new Error(BTW_HANDLED)
 
         case "set":
-          await writeHint(hint(sessionID), {
+          await addHint(hint(sessionID), {
             text: parsed.text,
             pinned: parsed.pinned,
           })
           const verb = parsed.pinned ? "Pinned hint" : "Hint"
           await sendVisibleMessage(
             sessionID,
-            `[btw] ${verb} set: "${parsed.text}"`,
+            `[btw] ${verb} added: "${parsed.text}"`,
           )
           throw new Error(BTW_HANDLED)
       }
@@ -126,9 +141,9 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       if (typeof sessionID !== "string" || !sessionID) return
 
       try {
-        const data = await readHint(hint(sessionID))
-        if (data) {
-          output.system.push(buildSystemBlock(data))
+        const hints = await readHints(hint(sessionID))
+        if (hints.length > 0) {
+          output.system.push(buildSystemBlock(hints))
         }
       } catch {}
     },
