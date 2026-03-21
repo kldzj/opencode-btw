@@ -1,6 +1,6 @@
 {
   "name": "opencode-btw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hint injection plugin for OpenCode — nudge the model mid-task without interrupting its flow",
   "main": "src/plugin.ts",
   "scripts": {
