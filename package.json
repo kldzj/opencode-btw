@@ -1,0 +1,33 @@
+{
+  "name": "opencode-btw",
+  "version": "0.1.0",
+  "description": "Hint injection plugin for OpenCode — nudge the model mid-task without interrupting its flow",
+  "main": "src/plugin.ts",
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "copilot",
+    "context-injection",
+    "btw"
+  ],
+  "author": "kldzj",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kldzj/opencode-btw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kldzj/opencode-btw/issues"
+  },
+  "homepage": "https://github.com/kldzj/opencode-btw#readme",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
