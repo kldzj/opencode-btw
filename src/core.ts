@@ -1,5 +1,5 @@
 import { createHash } from "crypto"
-import { mkdirSync, unlinkSync } from "fs"
+import { existsSync, mkdirSync, unlinkSync } from "fs"
 
 export interface HintEntry {
   text: string
@@ -11,24 +11,43 @@ export interface HintFile {
 }
 
 export type ParsedCommand =
-  | { action: "clear"; which: "all" | "last" }
+  | { action: "clear"; which: "all" | "last" | number }
   | { action: "status" }
+  | { action: "help" }
+  | { action: "debug" }
   | { action: "set"; text: string; pinned: boolean }
   | { action: "error"; message: string }
 
 export const BTW_HANDLED = "__BTW_HANDLED__"
 
-export const BTW_SYSTEM_INSTRUCTIONS = `<btw-hint-system>
-The user may inject real-time hints via the /btw command. These hints appear below as <btw-active-hint> blocks.
-When a hint is present:
-- Treat it as a direct, high-priority instruction from the user — equivalent to them telling you something face-to-face
-- Apply it IMMEDIATELY to your current and future actions — do not wait for a "good moment"
-- If the hint is a behavioral correction (e.g. "use Edit instead of sed"), adjust silently without calling attention to the change
-- If the hint is a direct request or question (e.g. "explain what you're doing"), respond to it naturally
-- If the hint contradicts your current approach, change course
-- The hint persists until the user clears it — apply it to every action, not just the next one
-- If the hint says to focus on specific files/areas, prioritize those and deprioritize others
-</btw-hint-system>`
+// Throws to prevent the LLM call after a /btw command.
+// See https://github.com/anomalyco/opencode/issues/9306
+export async function cancelCommand(): Promise<never> {
+  throw new Error(BTW_HANDLED)
+}
+
+export const BTW_HELP = `[btw] Usage:
+  /btw <hint>          Add a transient hint (auto-clears after model turn)
+  /btw pin <hint>      Add a persistent hint (stays until cleared)
+  /btw clear           Remove all hints
+  /btw clear last      Remove the most recently added hint
+  /btw clear <N>       Remove hint #N
+  /btw                 Show all active hints
+  /btw debug           Toggle debug mode (verbose toast logging)
+  /btw help            Show this help message`
+
+export const BTW_SYSTEM_INSTRUCTIONS = `## Active User Preferences
+
+This environment supports real-time user preferences via the /btw command.
+When preferences are listed below, apply them naturally to your work:
+
+- Each preference reflects the user's current intent and working style
+- Apply preferences consistently across all actions and responses
+- If a preference corrects your approach (e.g. "use Edit instead of sed"), adjust accordingly
+- If a preference asks a question, answer it in your response
+- If a preference changes your current direction, adapt smoothly
+- Preferences remain active until the user removes them
+- If a preference specifies files or areas to focus on, prioritize those`
 
 export function projectHash(directory: string): string {
   return createHash("md5").update(directory).digest("hex").slice(0, 12)
@@ -46,6 +65,34 @@ export function ensureDir(dir: string): void {
   try {
     mkdirSync(dir, { recursive: true })
   } catch {}
+}
+
+// ─── Debug Mode ──────────────────────────────────────────────────────
+
+export function debugMarkerPath(): string {
+  return `${process.env.HOME}/.cache/opencode/btw/.debug`
+}
+
+export function isDebugEnabled(): boolean {
+  try {
+    return existsSync(debugMarkerPath())
+  } catch {
+    return false
+  }
+}
+
+export async function toggleDebug(): Promise<boolean> {
+  const enabled = isDebugEnabled()
+  if (enabled) {
+    try {
+      unlinkSync(debugMarkerPath())
+    } catch {}
+    return false
+  } else {
+    ensureDir(`${process.env.HOME}/.cache/opencode/btw`)
+    await Bun.write(debugMarkerPath(), "")
+    return true
+  }
 }
 
 export async function readHints(filePath: string): Promise<HintEntry[]> {
@@ -108,6 +155,17 @@ export async function removeLast(filePath: string): Promise<HintEntry | null> {
   return removed
 }
 
+export async function removeAt(
+  filePath: string,
+  index: number,
+): Promise<HintEntry | null> {
+  const hints = await readHints(filePath)
+  if (index < 0 || index >= hints.length) return null
+  const [removed] = hints.splice(index, 1)
+  await writeHints(filePath, hints)
+  return removed
+}
+
 export function parseCommand(rawArgs: string): ParsedCommand {
   const args = rawArgs.trim()
 
@@ -115,8 +173,25 @@ export function parseCommand(rawArgs: string): ParsedCommand {
     return { action: "clear", which: "all" }
   }
 
+  if (args === "help") {
+    return { action: "help" }
+  }
+
+  if (args === "debug") {
+    return { action: "debug" }
+  }
+
   if (args === "clear last") {
     return { action: "clear", which: "last" }
+  }
+
+  const clearNumMatch = args.match(/^clear\s+(\d+)$/)
+  if (clearNumMatch) {
+    const num = parseInt(clearNumMatch[1], 10)
+    if (num < 1) {
+      return { action: "error", message: "Hint numbers start at 1" }
+    }
+    return { action: "clear", which: num }
   }
 
   if (!args) {
@@ -136,8 +211,14 @@ export function parseCommand(rawArgs: string): ParsedCommand {
 
 export function buildSystemBlock(hints: HintEntry[]): string {
   if (hints.length === 0) return ""
-  const hintBlocks = hints
-    .map((h) => `<btw-active-hint>\n${h.text}\n</btw-active-hint>`)
-    .join("\n\n")
-  return [BTW_SYSTEM_INSTRUCTIONS, "", hintBlocks].join("\n")
+  const hintList = hints
+    .map((h, i) => hints.length === 1 ? h.text : `${i + 1}. ${h.text}`)
+    .join("\n")
+  return [BTW_SYSTEM_INSTRUCTIONS, "", "### Current Preferences", hintList].join("\n")
+}
+
+export function buildUserHint(hints: HintEntry[]): string {
+  if (hints.length === 0) return ""
+  if (hints.length === 1) return `BTW, ${hints[0].text}`
+  return `BTW:\n${hints.map((h, i) => `${i + 1}. ${h.text}`).join("\n")}`
 }

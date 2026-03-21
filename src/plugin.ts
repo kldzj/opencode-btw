@@ -1,32 +1,28 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 import {
-  BTW_HANDLED,
+  BTW_HELP,
   addHint,
   buildSystemBlock,
+  buildUserHint,
   btwDir,
+  cancelCommand,
   clearHints,
   ensureDir,
   hintPath,
+  isDebugEnabled,
   parseCommand,
   readHints,
+  removeAt,
   removeLast,
   removeTransient,
+  toggleDebug,
 } from "./core"
 
 // btw — inject hints into the model's context without sending a new message.
 //
-// Uses three hooks:
-//   1. command.execute.before — intercepts /btw, saves hint, throws sentinel
-//      to cancel the LLM call entirely.
-//   2. experimental.chat.system.transform — appends hints to the system prompt
-//      on every LLM call (including tool-loop iterations).
-//   3. event — listens for session.idle to auto-clear transient hints, and
-//      session.deleted to clean up hint files.
-//
-// File layout:
-//   ~/.cache/opencode/btw/<project-hash>/
-//     <sessionID>.json       # { hints: [{ text, pinned }] }
+// Hint files are stored at ~/.cache/opencode/btw/<project-hash>/<sessionID>.json
+// Debug mode marker: ~/.cache/opencode/btw/.debug
 
 export const BtwPlugin: Plugin = async ({ directory, client }) => {
   const dir = btwDir(directory)
@@ -34,16 +30,21 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
 
   const hint = (sessionID: string) => hintPath(dir, sessionID)
 
-  const sendVisibleMessage = async (sessionID: string, text: string) => {
+  const notify = async (msg: string, duration = 3000) => {
     try {
-      await client.session.prompt({
-        path: { id: sessionID },
+      await client.tui.showToast({
         body: {
-          noReply: true,
-          parts: [{ type: "text" as const, text, ignored: true }],
+          message: msg,
+          variant: "info" as const,
+          duration,
         },
       })
     } catch {}
+  }
+
+  const debugLog = async (msg: string) => {
+    if (!isDebugEnabled()) return
+    await notify(`[btw/debug] ${msg}`, 2000)
   }
 
   return {
@@ -56,15 +57,32 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       }
     },
 
+    "tool.execute.after": async (input, _output) => {
+      // When the model uses the "question" tool, transient hints have served
+      // their purpose — the model saw them, processed them, and asked the user
+      // a question. Clear transient hints so the next LLM call (processing the
+      // user's answer) doesn't carry stale one-shot nudges.
+      if (input.tool !== "question") return
+      const sessionID = (input as any).sessionID
+      if (typeof sessionID !== "string") return
+
+      const removed = await removeTransient(hint(sessionID))
+      if (removed) {
+        await debugLog("question-clear: transient hints removed (question tool fired)")
+        await notify("[btw] Transient hints auto-cleared (question asked)")
+      }
+    },
+
     event: async ({ event }) => {
-      // Auto-clear transient hints when the model finishes a complete turn
+      // Fallback: auto-clear transient hints when the model finishes
       if (event.type === "session.idle") {
         const sessionID = (event as any).properties?.sessionID
         if (typeof sessionID !== "string") return
 
         const removed = await removeTransient(hint(sessionID))
         if (removed) {
-          await sendVisibleMessage(sessionID, "[btw] Transient hints auto-cleared")
+          await debugLog("idle-clear: transient hints removed")
+          await notify("[btw] Transient hints auto-cleared")
         }
       }
 
@@ -88,39 +106,51 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
           if (parsed.which === "last") {
             const removed = await removeLast(hint(sessionID))
             if (removed) {
-              await sendVisibleMessage(
-                sessionID,
-                `[btw] Removed last hint: "${removed.text}"`,
-              )
+              await notify(`[btw] Removed last hint: "${removed.text}"`)
             } else {
-              await sendVisibleMessage(sessionID, "[btw] No hints to remove")
+              await notify("[btw] No hints to remove")
+            }
+          } else if (typeof parsed.which === "number") {
+            const removed = await removeAt(hint(sessionID), parsed.which - 1)
+            if (removed) {
+              await notify(`[btw] Removed hint #${parsed.which}: "${removed.text}"`)
+            } else {
+              await notify(`[btw] No hint at position #${parsed.which}`)
             }
           } else {
             await clearHints(hint(sessionID))
-            await sendVisibleMessage(sessionID, "[btw] All hints cleared")
+            await notify("[btw] All hints cleared")
           }
-          throw new Error(BTW_HANDLED)
+          await debugLog("clear: hints cleared")
+          return cancelCommand()
 
         case "status": {
           const hints = await readHints(hint(sessionID))
           if (hints.length === 0) {
-            await sendVisibleMessage(sessionID, "[btw] No hints set")
+            await notify("[btw] No hints set")
           } else {
             const lines = hints.map((h, i) => {
               const label = h.pinned ? "pinned" : "transient"
               return `  ${i + 1}. [${label}] "${h.text}"`
             })
-            await sendVisibleMessage(
-              sessionID,
-              `[btw] Active hints:\n${lines.join("\n")}`,
-            )
+            await notify(`[btw] Active hints:\n${lines.join("\n")}`, 5000)
           }
-          throw new Error(BTW_HANDLED)
+          return cancelCommand()
         }
 
         case "error":
-          await sendVisibleMessage(sessionID, `[btw] ${parsed.message}`)
-          throw new Error(BTW_HANDLED)
+          await notify(`[btw] ${parsed.message}`)
+          return cancelCommand()
+
+        case "help":
+          await notify(BTW_HELP, 8000)
+          return cancelCommand()
+
+        case "debug": {
+          const enabled = await toggleDebug()
+          await notify(`[btw] Debug mode ${enabled ? "enabled" : "disabled"}`)
+          return cancelCommand()
+        }
 
         case "set":
           await addHint(hint(sessionID), {
@@ -128,12 +158,40 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
             pinned: parsed.pinned,
           })
           const verb = parsed.pinned ? "Pinned hint" : "Hint"
-          await sendVisibleMessage(
-            sessionID,
-            `[btw] ${verb} added: "${parsed.text}"`,
-          )
-          throw new Error(BTW_HANDLED)
+          await notify(`[btw] ${verb} added: "${parsed.text}"`)
+          await debugLog(`set: "${parsed.text}" (${parsed.pinned ? "pinned" : "transient"})`)
+          return cancelCommand()
       }
+    },
+
+    "experimental.chat.messages.transform": async (_input, output) => {
+      // Find the last user message to append hint text
+      const messages = (output as Record<string, unknown>)?.messages
+      if (!Array.isArray(messages) || messages.length === 0) return
+
+      const lastUser = [...messages].reverse().find(
+        (m: any) => m?.info?.role === "user",
+      ) as { info: Record<string, unknown>; parts: any[] } | undefined
+      if (!lastUser) return
+
+      const sessionID = lastUser.info?.sessionID
+      if (typeof sessionID !== "string" || !sessionID) return
+
+      try {
+        const hints = await readHints(hint(sessionID))
+        if (hints.length === 0) return
+
+        const hintText = buildUserHint(hints)
+        lastUser.parts.push({
+          id: `btw-${Date.now()}`,
+          sessionID,
+          messageID: lastUser.info.id ?? "",
+          type: "text",
+          text: hintText,
+          synthetic: true,
+        })
+        await debugLog(`messages: appended preferences to last user message`)
+      } catch {}
     },
 
     "experimental.chat.system.transform": async (input, output) => {
@@ -143,7 +201,8 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       try {
         const hints = await readHints(hint(sessionID))
         if (hints.length > 0) {
-          output.system.push(buildSystemBlock(hints))
+          output.system.unshift(buildSystemBlock(hints))
+          await debugLog(`transform: applied ${hints.length} preference(s)`)
         }
       } catch {}
     },

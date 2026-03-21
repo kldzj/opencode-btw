@@ -1,12 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { mkdirSync, rmSync, existsSync, readFileSync } from "fs"
+import { mkdirSync, rmSync, existsSync, readFileSync, unlinkSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
 import {
   type HintEntry,
   BTW_HANDLED,
+  BTW_HELP,
   BTW_SYSTEM_INSTRUCTIONS,
+  cancelCommand,
   projectHash,
   btwDir,
   hintPath,
@@ -16,9 +18,14 @@ import {
   clearHints,
   removeTransient,
   removeLast,
+  removeAt,
   parseCommand,
   buildSystemBlock,
+  buildUserHint,
   ensureDir,
+  debugMarkerPath,
+  isDebugEnabled,
+  toggleDebug,
 } from "./core"
 
 // ─── Pure Functions ──────────────────────────────────────────────────
@@ -75,6 +82,10 @@ describe("parseCommand", () => {
 
   test('returns clear last for "clear last"', () => {
     expect(parseCommand("clear last")).toEqual({ action: "clear", which: "last" })
+  })
+
+  test('returns help action for "help"', () => {
+    expect(parseCommand("help")).toEqual({ action: "help" })
   })
 
   test("trims whitespace before matching", () => {
@@ -155,13 +166,49 @@ describe("parseCommand", () => {
   })
 
   test("treats 'clear something' as a set action", () => {
-    // "clear something" is not a recognized clear variant, it's a hint
-    // Actually no — "clear" exact match vs longer. Let me check.
-    // parseCommand trims, checks exact "clear" or "reset", then "clear last".
-    // "clear something" would not match any of those, so it falls through to set.
+    // "clear something" doesn't match any clear variant, so it's treated as hint text
     expect(parseCommand("clear something")).toEqual({
       action: "set",
       text: "clear something",
+      pinned: false,
+    })
+  })
+
+  test('returns clear with number for "clear 2"', () => {
+    expect(parseCommand("clear 2")).toEqual({ action: "clear", which: 2 })
+  })
+
+  test('returns clear with number for "clear 1"', () => {
+    expect(parseCommand("clear 1")).toEqual({ action: "clear", which: 1 })
+  })
+
+  test("treats clear 0 as error", () => {
+    expect(parseCommand("clear 0")).toEqual({
+      action: "error",
+      message: "Hint numbers start at 1",
+    })
+  })
+
+  test("treats clear with non-numeric arg as a set action", () => {
+    expect(parseCommand("clear all")).toEqual({
+      action: "set",
+      text: "clear all",
+      pinned: false,
+    })
+  })
+
+  test('returns debug action for "debug"', () => {
+    expect(parseCommand("debug")).toEqual({ action: "debug" })
+  })
+
+  test("trims whitespace around debug", () => {
+    expect(parseCommand("  debug  ")).toEqual({ action: "debug" })
+  })
+
+  test("treats 'debugging' as a set action, not debug", () => {
+    expect(parseCommand("debugging")).toEqual({
+      action: "set",
+      text: "debugging",
       pinned: false,
     })
   })
@@ -179,23 +226,21 @@ describe("buildSystemBlock", () => {
     expect(block).toContain(BTW_SYSTEM_INSTRUCTIONS)
   })
 
-  test("wraps single hint in btw-active-hint tags", () => {
+  test("formats single hint as plain text under preferences header", () => {
     const block = buildSystemBlock([{ text: "use Edit tool", pinned: false }])
-    expect(block).toContain("<btw-active-hint>")
+    expect(block).toContain("### Current Preferences")
     expect(block).toContain("use Edit tool")
-    expect(block).toContain("</btw-active-hint>")
+    // Single hint should not be numbered
+    expect(block).not.toContain("1.")
   })
 
-  test("renders multiple hints as separate blocks", () => {
+  test("renders multiple hints as numbered list", () => {
     const block = buildSystemBlock([
       { text: "hint one", pinned: false },
       { text: "hint two", pinned: true },
     ])
-    // Match opening tags with newline (not the mention in instructions)
-    const matches = block.match(/<btw-active-hint>\n/g)
-    expect(matches?.length).toBe(2)
-    expect(block).toContain("hint one")
-    expect(block).toContain("hint two")
+    expect(block).toContain("1. hint one")
+    expect(block).toContain("2. hint two")
   })
 
   test("includes system instructions only once for multiple hints", () => {
@@ -203,16 +248,40 @@ describe("buildSystemBlock", () => {
       { text: "a", pinned: false },
       { text: "b", pinned: false },
     ])
-    const matches = block.match(/<btw-hint-system>/g)
+    const matches = block.match(/## Active User Preferences/g)
     expect(matches?.length).toBe(1)
   })
 })
 
 describe("BTW_SYSTEM_INSTRUCTIONS", () => {
   test("contains key behavioral directives", () => {
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("high-priority instruction")
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("IMMEDIATELY")
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("behavioral correction")
+    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("user preferences")
+    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("apply them naturally")
+    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("corrects your approach")
+  })
+})
+
+describe("buildUserHint", () => {
+  test("returns empty string for no hints", () => {
+    expect(buildUserHint([])).toBe("")
+  })
+
+  test("formats single hint with BTW prefix", () => {
+    const result = buildUserHint([{ text: "use emojis", pinned: false }])
+    expect(result).toBe("BTW, use emojis")
+  })
+
+  test("formats multiple hints as numbered list", () => {
+    const result = buildUserHint([
+      { text: "use emojis", pinned: false },
+      { text: "focus on auth", pinned: true },
+    ])
+    expect(result).toBe("BTW:\n1. use emojis\n2. focus on auth")
+  })
+
+  test("single hint is not numbered", () => {
+    const result = buildUserHint([{ text: "be brief", pinned: false }])
+    expect(result).not.toContain("1.")
   })
 })
 
@@ -387,6 +456,87 @@ describe("removeTransient", () => {
   })
 })
 
+// ─── removeAt ────────────────────────────────────────────────────────
+
+describe("removeAt", () => {
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `btw-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(testDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  test("removes hint at given index (0-based)", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [
+      { text: "first", pinned: false },
+      { text: "second", pinned: true },
+      { text: "third", pinned: false },
+    ])
+
+    const removed = await removeAt(filePath, 1)
+    expect(removed).toEqual({ text: "second", pinned: true })
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([
+      { text: "first", pinned: false },
+      { text: "third", pinned: false },
+    ])
+  })
+
+  test("removes first hint at index 0", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [
+      { text: "first", pinned: false },
+      { text: "second", pinned: true },
+    ])
+
+    const removed = await removeAt(filePath, 0)
+    expect(removed).toEqual({ text: "first", pinned: false })
+
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "second", pinned: true }])
+  })
+
+  test("removes file when last remaining hint is removed", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "only", pinned: false }])
+
+    const removed = await removeAt(filePath, 0)
+    expect(removed).toEqual({ text: "only", pinned: false })
+    expect(existsSync(filePath)).toBe(false)
+  })
+
+  test("returns null for out-of-bounds index", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "only", pinned: false }])
+
+    const removed = await removeAt(filePath, 5)
+    expect(removed).toBeNull()
+
+    // Original hints should be unchanged
+    const result = await readHints(filePath)
+    expect(result).toEqual([{ text: "only", pinned: false }])
+  })
+
+  test("returns null for negative index", async () => {
+    const filePath = join(testDir, "session-1.json")
+    await writeHints(filePath, [{ text: "only", pinned: false }])
+
+    const removed = await removeAt(filePath, -1)
+    expect(removed).toBeNull()
+  })
+
+  test("returns null for empty/missing file", async () => {
+    const removed = await removeAt(join(testDir, "missing.json"), 0)
+    expect(removed).toBeNull()
+  })
+})
+
 // ─── removeLast ──────────────────────────────────────────────────────
 
 describe("removeLast", () => {
@@ -455,11 +605,127 @@ describe("ensureDir", () => {
   })
 })
 
+describe("BTW_HELP", () => {
+  test("contains key subcommands", () => {
+    expect(BTW_HELP).toContain("/btw pin")
+    expect(BTW_HELP).toContain("/btw clear")
+    expect(BTW_HELP).toContain("/btw help")
+  })
+
+  test("contains debug subcommand", () => {
+    expect(BTW_HELP).toContain("/btw debug")
+  })
+})
+
+// ─── cancelCommand ──────────────────────────────────────────────────
+
+describe("cancelCommand", () => {
+  test("always throws (never resolves)", async () => {
+    await expect(cancelCommand()).rejects.toThrow()
+  })
+
+  test("throws Error with BTW_HANDLED message", async () => {
+    let thrown: Error | null = null
+    try {
+      await cancelCommand()
+    } catch (e) {
+      thrown = e as Error
+    }
+
+    expect(thrown).not.toBeNull()
+    expect(thrown).toBeInstanceOf(Error)
+    expect(thrown!.message).toBe(BTW_HANDLED)
+  })
+})
+
 // ─── BTW_HANDLED sentinel ───────────────────────────────────────────
 
 describe("BTW_HANDLED", () => {
   test("is a non-empty string", () => {
     expect(BTW_HANDLED).toBeTruthy()
     expect(typeof BTW_HANDLED).toBe("string")
+  })
+})
+
+// ─── Debug Mode ────────────────────────────────────────────────────
+
+describe("debugMarkerPath", () => {
+  test("returns a path under ~/.cache/opencode/btw/", () => {
+    const original = process.env.HOME
+    process.env.HOME = "/mock/home"
+
+    expect(debugMarkerPath()).toBe("/mock/home/.cache/opencode/btw/.debug")
+
+    process.env.HOME = original
+  })
+})
+
+describe("isDebugEnabled / toggleDebug", () => {
+  let debugPath: string
+
+  beforeEach(() => {
+    // Use a temp directory to avoid polluting real debug state
+    const tempDebugDir = join(tmpdir(), `btw-debug-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(tempDebugDir, { recursive: true })
+    debugPath = join(tempDebugDir, ".debug")
+
+    // Override HOME so debugMarkerPath() points to our temp dir
+    process.env._BTW_ORIG_HOME = process.env.HOME
+    process.env.HOME = join(tempDebugDir, "..")
+    // We need the path to be exactly HOME/.cache/opencode/btw/.debug
+    // So let's set up the directory structure
+  })
+
+  afterEach(() => {
+    process.env.HOME = process.env._BTW_ORIG_HOME
+    delete process.env._BTW_ORIG_HOME
+    try {
+      unlinkSync(debugPath)
+    } catch {}
+  })
+
+  test("isDebugEnabled returns false when marker file doesn't exist", () => {
+    // With our temp HOME, the .debug file won't exist
+    expect(isDebugEnabled()).toBe(false)
+  })
+
+  test("toggleDebug creates marker file and returns true", async () => {
+    // Set HOME so debugMarkerPath() resolves to a real temp path
+    const tempDir = join(tmpdir(), `btw-debug-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    const cacheDir = join(tempDir, ".cache", "opencode", "btw")
+    mkdirSync(cacheDir, { recursive: true })
+    const origHome = process.env.HOME
+    process.env.HOME = tempDir
+
+    try {
+      const result = await toggleDebug()
+      expect(result).toBe(true)
+      expect(existsSync(debugMarkerPath())).toBe(true)
+    } finally {
+      process.env.HOME = origHome
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("toggleDebug disables when already enabled", async () => {
+    const tempDir = join(tmpdir(), `btw-debug-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    const cacheDir = join(tempDir, ".cache", "opencode", "btw")
+    mkdirSync(cacheDir, { recursive: true })
+    const origHome = process.env.HOME
+    process.env.HOME = tempDir
+
+    try {
+      // Enable first
+      await toggleDebug()
+      expect(isDebugEnabled()).toBe(true)
+
+      // Toggle again to disable
+      const result = await toggleDebug()
+      expect(result).toBe(false)
+      expect(isDebugEnabled()).toBe(false)
+    } finally {
+      process.env.HOME = origHome
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })
