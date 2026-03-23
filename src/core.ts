@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import { existsSync, mkdirSync, unlinkSync } from "fs"
+import { DEFAULT_SYSTEM_INSTRUCTIONS, type BtwConfig } from "./config"
 
 export interface HintEntry {
   text: string
@@ -36,19 +37,6 @@ export const BTW_HELP = `[btw] Usage:
   /btw debug           Toggle debug mode (verbose toast logging)
   /btw help            Show this help message`
 
-export const BTW_SYSTEM_INSTRUCTIONS = `## Active User Preferences
-
-This environment supports real-time user preferences via the /btw command.
-When preferences are listed below, apply them naturally to your work:
-
-- Each preference reflects the user's current intent and working style
-- Apply preferences consistently across all actions and responses
-- If a preference corrects your approach (e.g. "use Edit instead of sed"), adjust accordingly
-- If a preference asks a question, answer it in your response
-- If a preference changes your current direction, adapt smoothly
-- Preferences remain active until the user removes them
-- If a preference specifies files or areas to focus on, prioritize those`
-
 export function projectHash(directory: string): string {
   return createHash("md5").update(directory).digest("hex").slice(0, 12)
 }
@@ -58,7 +46,8 @@ export function btwDir(directory: string): string {
 }
 
 export function hintPath(dir: string, sessionID: string): string {
-  return `${dir}/${sessionID}.json`
+  const safe = sessionID.replace(/[^a-zA-Z0-9_-]/g, "_")
+  return `${dir}/${safe}.json`
 }
 
 export function ensureDir(dir: string): void {
@@ -73,7 +62,9 @@ export function debugMarkerPath(): string {
   return `${process.env.HOME}/.cache/opencode/btw/.debug`
 }
 
-export function isDebugEnabled(): boolean {
+export function isDebugEnabled(config?: BtwConfig): boolean {
+  // When config explicitly sets debug, it takes priority
+  if (config && "debug" in config) return config.debug
   try {
     return existsSync(debugMarkerPath())
   } catch {
@@ -166,10 +157,10 @@ export async function removeAt(
   return removed
 }
 
-export function parseCommand(rawArgs: string): ParsedCommand {
+export function parseCommand(rawArgs: string, config?: BtwConfig): ParsedCommand {
   const args = rawArgs.trim()
 
-  if (args === "clear" || args === "reset") {
+  if (args === "clear" || args === "reset" || args === "clear all") {
     return { action: "clear", which: "all" }
   }
 
@@ -206,19 +197,25 @@ export function parseCommand(rawArgs: string): ParsedCommand {
     return { action: "set", text, pinned: true }
   }
 
-  return { action: "set", text: args, pinned: false }
+  // Use config.defaultPinned to determine default hint type
+  const defaultPinned = config?.defaultPinned ?? false
+  return { action: "set", text: args, pinned: defaultPinned }
 }
 
-export function buildSystemBlock(hints: HintEntry[]): string {
+export function buildSystemBlock(hints: HintEntry[], config?: BtwConfig): string {
   if (hints.length === 0) return ""
   const hintList = hints
     .map((h, i) => hints.length === 1 ? h.text : `${i + 1}. ${h.text}`)
     .join("\n")
-  return [BTW_SYSTEM_INSTRUCTIONS, "", "### Current Preferences", hintList].join("\n")
+  const instructions = config?.injection?.systemInstructions ?? DEFAULT_SYSTEM_INSTRUCTIONS
+  return [instructions, "", "### Current Preferences", hintList].join("\n")
 }
 
-export function buildUserHint(hints: HintEntry[]): string {
+export function buildUserHint(hints: HintEntry[], config?: BtwConfig): string {
   if (hints.length === 0) return ""
-  if (hints.length === 1) return `BTW, ${hints[0].text}`
-  return `BTW:\n${hints.map((h, i) => `${i + 1}. ${h.text}`).join("\n")}`
+  const prefix = config?.injection?.userMessagePrefix ?? "BTW, "
+  if (hints.length === 1) return `${prefix}${hints[0].text}`
+  // Derive multi-hint header from prefix: "BTW, " → "BTW:", "Hey, " → "Hey:"
+  const label = prefix.replace(/[,:\s]+$/, "")
+  return `${label}:\n${hints.map((h, i) => `${i + 1}. ${h.text}`).join("\n")}`
 }

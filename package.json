@@ -9,6 +9,8 @@
   "files": [
     "src/plugin.ts",
     "src/core.ts",
+    "src/config.ts",
+    "btw.schema.json",
     "LICENSE"
   ],
   "keywords": [
@@ -33,5 +35,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }

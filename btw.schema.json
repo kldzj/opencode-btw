@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "opencode-btw Configuration",
+  "description": "Configuration for the opencode-btw hint injection plugin",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for IDE auto-completion"
+    },
+    "defaultPinned": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether newly added hints are pinned (persistent) by default. When false, hints are transient and auto-clear after the model turn."
+    },
+    "autoClear": {
+      "type": "object",
+      "description": "Controls when transient hints are automatically cleared",
+      "additionalProperties": false,
+      "properties": {
+        "onIdle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-clear transient hints when the session goes idle (model finishes responding)"
+        },
+        "onQuestionTool": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-clear transient hints when the model uses the question tool"
+        }
+      }
+    },
+    "injection": {
+      "type": "object",
+      "description": "Controls how and where hints are injected into the model's context",
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": ["both", "system", "user"],
+          "default": "both",
+          "description": "Where to inject hints: 'both' injects into system prompt AND user message, 'system' only into system prompt, 'user' only into user message"
+        },
+        "systemPromptPosition": {
+          "type": "string",
+          "enum": ["prepend", "append"],
+          "default": "prepend",
+          "description": "Whether to prepend or append the hint block in the system prompt"
+        },
+        "systemInstructions": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Custom framing text for the system prompt hint block. Set to null to use the built-in default. This replaces the '## Active User Preferences' section."
+        },
+        "userMessagePrefix": {
+          "type": "string",
+          "default": "BTW, ",
+          "description": "Prefix for single-hint injection into user messages (e.g., 'BTW, ')"
+        }
+      }
+    },
+    "debug": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable debug mode by default (verbose toast logging)"
+    },
+    "toastDuration": {
+      "type": "number",
+      "default": 3000,
+      "minimum": 100,
+      "description": "Default toast notification duration in milliseconds"
+    }
+  }
+}

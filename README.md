@@ -58,6 +58,86 @@ Transient hints auto-clear in two ways:
 
 Hints are **session-scoped** (each session has its own) and **project-scoped** (stored under a hash of the project directory). All data lives in `~/.cache/opencode/btw/`. Hint files are cleaned up automatically when sessions are deleted.
 
+## Configuration
+
+The plugin works out of the box with no configuration. All options below are optional — only add what you want to change.
+
+### Config files
+
+Configuration is loaded from two locations, merged in order (later overrides earlier):
+
+| Layer      | Path                              | Purpose              |
+| ---------- | --------------------------------- | -------------------- |
+| **Global** | `~/.config/opencode/btw.jsonc`    | User-wide defaults   |
+| **Project** | `.opencode/btw.jsonc` (walks up) | Per-project overrides |
+
+The global config file is auto-created on first run with a `$schema` reference for IDE auto-completion. Files use JSONC format (JSON with comments and trailing commas).
+
+You can also use `XDG_CONFIG_HOME` to customize the global config location: `$XDG_CONFIG_HOME/opencode/btw.jsonc`.
+
+### Options
+
+```jsonc
+{
+  // JSON Schema for IDE auto-completion
+  "$schema": "https://raw.githubusercontent.com/kldzj/opencode-btw/main/btw.schema.json",
+
+  // Default hint type: false = transient (auto-clears), true = pinned (persists)
+  "defaultPinned": false,
+
+  // Auto-clear behavior for transient hints
+  "autoClear": {
+    "onIdle": true,           // Clear when session goes idle
+    "onQuestionTool": true    // Clear when the question tool fires
+  },
+
+  // Hint injection settings
+  "injection": {
+    "target": "both",                  // "both", "system", or "user"
+    "systemPromptPosition": "prepend", // "prepend" or "append"
+    "systemInstructions": null,        // Custom framing text (null = built-in default)
+    "userMessagePrefix": "BTW, "       // Prefix for single-hint user messages
+  },
+
+  // Enable debug mode (verbose toast logging)
+  "debug": false,
+
+  // Default toast notification duration in milliseconds
+  "toastDuration": 3000
+}
+```
+
+### Examples
+
+**Pinned hints by default** — skip typing `pin` every time:
+
+```jsonc
+{ "defaultPinned": true }
+```
+
+**System prompt only** — don't modify user messages:
+
+```jsonc
+{ "injection": { "target": "system" } }
+```
+
+**Custom framing** — change how hints are presented to the model:
+
+```jsonc
+{
+  "injection": {
+    "systemInstructions": "The user has set the following preferences. Follow them strictly.",
+    "userMessagePrefix": "Note: "
+  }
+}
+```
+
+**Disable auto-clear on idle** — only clear when the question tool fires:
+
+```jsonc
+{ "autoClear": { "onIdle": false } }
+```
+
 ## Use cases
 
 - **Error loops**: the model keeps making the same mistake — `/btw you're using the wrong API, check the docs for v2`

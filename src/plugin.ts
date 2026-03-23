@@ -18,6 +18,7 @@ import {
   removeTransient,
   toggleDebug,
 } from "./core"
+import { type BtwConfig, getConfig } from "./config"
 
 // btw — inject hints into the model's context without sending a new message.
 //
@@ -25,32 +26,34 @@ import {
 // Debug mode marker: ~/.cache/opencode/btw/.debug
 
 export const BtwPlugin: Plugin = async ({ directory, client }) => {
+  const config = getConfig({ directory, client })
+
   const dir = btwDir(directory)
   ensureDir(dir)
 
   const hint = (sessionID: string) => hintPath(dir, sessionID)
 
-  const notify = async (msg: string, duration = 3000) => {
+  const notify = async (msg: string, duration?: number) => {
     try {
       await client.tui.showToast({
         body: {
           message: msg,
           variant: "info" as const,
-          duration,
+          duration: duration ?? config.toastDuration,
         },
       })
     } catch {}
   }
 
   const debugLog = async (msg: string) => {
-    if (!isDebugEnabled()) return
+    if (!isDebugEnabled(config)) return
     await notify(`[btw/debug] ${msg}`, 2000)
   }
 
   return {
-    config: (config) => {
-      ;(config as any).command = (config as any).command ?? {}
-      ;(config as any).command["btw"] = {
+    config: (cfg) => {
+      ;(cfg as any).command = (cfg as any).command ?? {}
+      ;(cfg as any).command["btw"] = {
         description:
           "Inject a hint into the model's context (stacks; transient by default, use 'pin' to persist)",
         template: "$ARGUMENTS",
@@ -62,6 +65,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       // their purpose — the model saw them, processed them, and asked the user
       // a question. Clear transient hints so the next LLM call (processing the
       // user's answer) doesn't carry stale one-shot nudges.
+      if (!config.autoClear.onQuestionTool) return
       if (input.tool !== "question") return
       const sessionID = (input as any).sessionID
       if (typeof sessionID !== "string") return
@@ -76,6 +80,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
     event: async ({ event }) => {
       // Fallback: auto-clear transient hints when the model finishes
       if (event.type === "session.idle") {
+        if (!config.autoClear.onIdle) return
         const sessionID = (event as any).properties?.sessionID
         if (typeof sessionID !== "string") return
 
@@ -99,7 +104,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
       if (input.command !== "btw") return
 
       const sessionID = input.sessionID
-      const parsed = parseCommand(input.arguments ?? "")
+      const parsed = parseCommand(input.arguments ?? "", config)
 
       switch (parsed.action) {
         case "clear":
@@ -165,6 +170,9 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.messages.transform": async (_input, output) => {
+      // Skip user message injection if target is "system" only
+      if (config.injection.target === "system") return
+
       // Find the last user message to append hint text
       const messages = (output as Record<string, unknown>)?.messages
       if (!Array.isArray(messages) || messages.length === 0) return
@@ -181,7 +189,7 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
         const hints = await readHints(hint(sessionID))
         if (hints.length === 0) return
 
-        const hintText = buildUserHint(hints)
+        const hintText = buildUserHint(hints, config)
         lastUser.parts.push({
           id: `btw-${Date.now()}`,
           sessionID,
@@ -195,13 +203,21 @@ export const BtwPlugin: Plugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.system.transform": async (input, output) => {
+      // Skip system prompt injection if target is "user" only
+      if (config.injection.target === "user") return
+
       const sessionID = (input as Record<string, unknown>)?.sessionID
       if (typeof sessionID !== "string" || !sessionID) return
 
       try {
         const hints = await readHints(hint(sessionID))
         if (hints.length > 0) {
-          output.system.unshift(buildSystemBlock(hints))
+          const block = buildSystemBlock(hints, config)
+          if (config.injection.systemPromptPosition === "append") {
+            output.system.push(block)
+          } else {
+            output.system.unshift(block)
+          }
           await debugLog(`transform: applied ${hints.length} preference(s)`)
         }
       } catch {}
