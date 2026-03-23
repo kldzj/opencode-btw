@@ -80,7 +80,7 @@ You can also use `XDG_CONFIG_HOME` to customize the global config location: `$XD
 ```jsonc
 {
   // JSON Schema for IDE auto-completion
-  "$schema": "https://raw.githubusercontent.com/kldzj/opencode-btw/master/btw.schema.json",
+  "$schema": "https://raw.githubusercontent.com/kldzj/opencode-btw/main/btw.schema.json",
 
   // Default hint type: false = transient (auto-clears), true = pinned (persists)
   "defaultPinned": false,

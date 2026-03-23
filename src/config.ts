@@ -73,7 +73,7 @@ export const DEFAULT_CONFIG: Readonly<BtwConfig> = {
 // ─── Schema reference ────────────────────────────────────────────────
 
 const SCHEMA_URL =
-  "https://raw.githubusercontent.com/kldzj/opencode-btw/master/btw.schema.json"
+  "https://raw.githubusercontent.com/kldzj/opencode-btw/main/btw.schema.json"
 
 // ─── Config paths ────────────────────────────────────────────────────
 
