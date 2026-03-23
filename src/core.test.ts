@@ -7,7 +7,6 @@ import {
   type HintEntry,
   BTW_HANDLED,
   BTW_HELP,
-  BTW_SYSTEM_INSTRUCTIONS,
   cancelCommand,
   projectHash,
   btwDir,
@@ -27,6 +26,7 @@ import {
   isDebugEnabled,
   toggleDebug,
 } from "./core"
+import { DEFAULT_SYSTEM_INSTRUCTIONS, type BtwConfig, DEFAULT_CONFIG } from "./config"
 
 // ─── Pure Functions ──────────────────────────────────────────────────
 
@@ -66,6 +66,12 @@ describe("hintPath", () => {
   test("combines dir and sessionID", () => {
     const path = hintPath("/some/dir", "session-123")
     expect(path).toBe("/some/dir/session-123.json")
+  })
+
+  test("sanitizes sessionID to prevent path traversal", () => {
+    const path = hintPath("/some/dir", "../../etc/passwd")
+    expect(path).toBe("/some/dir/______etc_passwd.json")
+    expect(path).not.toContain("..")
   })
 })
 
@@ -189,11 +195,10 @@ describe("parseCommand", () => {
     })
   })
 
-  test("treats clear with non-numeric arg as a set action", () => {
+  test("treats 'clear all' as clear command", () => {
     expect(parseCommand("clear all")).toEqual({
-      action: "set",
-      text: "clear all",
-      pinned: false,
+      action: "clear",
+      which: "all",
     })
   })
 
@@ -223,7 +228,7 @@ describe("buildSystemBlock", () => {
 
   test("includes system instructions for single hint", () => {
     const block = buildSystemBlock([{ text: "test hint", pinned: false }])
-    expect(block).toContain(BTW_SYSTEM_INSTRUCTIONS)
+    expect(block).toContain(DEFAULT_SYSTEM_INSTRUCTIONS)
   })
 
   test("formats single hint as plain text under preferences header", () => {
@@ -253,11 +258,11 @@ describe("buildSystemBlock", () => {
   })
 })
 
-describe("BTW_SYSTEM_INSTRUCTIONS", () => {
+describe("DEFAULT_SYSTEM_INSTRUCTIONS", () => {
   test("contains key behavioral directives", () => {
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("user preferences")
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("apply them naturally")
-    expect(BTW_SYSTEM_INSTRUCTIONS).toContain("corrects your approach")
+    expect(DEFAULT_SYSTEM_INSTRUCTIONS).toContain("user preferences")
+    expect(DEFAULT_SYSTEM_INSTRUCTIONS).toContain("apply them naturally")
+    expect(DEFAULT_SYSTEM_INSTRUCTIONS).toContain("corrects your approach")
   })
 })
 
@@ -727,5 +732,101 @@ describe("isDebugEnabled / toggleDebug", () => {
       process.env.HOME = origHome
       rmSync(tempDir, { recursive: true, force: true })
     }
+  })
+})
+
+// ─── Config-Aware Behavior ──────────────────────────────────────────
+
+describe("parseCommand with config", () => {
+  test("uses defaultPinned from config when adding hints", () => {
+    const config = { ...DEFAULT_CONFIG, defaultPinned: true }
+    const result = parseCommand("my hint", config)
+    expect(result).toEqual({ action: "set", text: "my hint", pinned: true })
+  })
+
+  test("defaults to transient when no config provided", () => {
+    const result = parseCommand("my hint")
+    expect(result).toEqual({ action: "set", text: "my hint", pinned: false })
+  })
+
+  test("explicit pin overrides defaultPinned=false", () => {
+    const config = { ...DEFAULT_CONFIG, defaultPinned: false }
+    const result = parseCommand("pin my hint", config)
+    expect(result).toEqual({ action: "set", text: "my hint", pinned: true })
+  })
+
+  test("explicit pin still works with defaultPinned=true", () => {
+    const config = { ...DEFAULT_CONFIG, defaultPinned: true }
+    const result = parseCommand("pin my hint", config)
+    expect(result).toEqual({ action: "set", text: "my hint", pinned: true })
+  })
+})
+
+describe("buildSystemBlock with config", () => {
+  test("uses custom systemInstructions from config", () => {
+    const config: BtwConfig = {
+      ...DEFAULT_CONFIG,
+      injection: { ...DEFAULT_CONFIG.injection, systemInstructions: "Custom instructions here" },
+    }
+    const block = buildSystemBlock([{ text: "hint", pinned: false }], config)
+    expect(block).toContain("Custom instructions here")
+    expect(block).not.toContain("Active User Preferences")
+  })
+
+  test("uses default instructions when systemInstructions is null", () => {
+    const config: BtwConfig = {
+      ...DEFAULT_CONFIG,
+      injection: { ...DEFAULT_CONFIG.injection, systemInstructions: null },
+    }
+    const block = buildSystemBlock([{ text: "hint", pinned: false }], config)
+    expect(block).toContain("Active User Preferences")
+  })
+
+  test("uses default instructions when no config provided", () => {
+    const block = buildSystemBlock([{ text: "hint", pinned: false }])
+    expect(block).toContain("Active User Preferences")
+  })
+})
+
+describe("buildUserHint with config", () => {
+  test("uses custom userMessagePrefix from config", () => {
+    const config: BtwConfig = {
+      ...DEFAULT_CONFIG,
+      injection: { ...DEFAULT_CONFIG.injection, userMessagePrefix: "Hey, " },
+    }
+    const result = buildUserHint([{ text: "use emojis", pinned: false }], config)
+    expect(result).toBe("Hey, use emojis")
+  })
+
+  test("uses default prefix when no config provided", () => {
+    const result = buildUserHint([{ text: "use emojis", pinned: false }])
+    expect(result).toBe("BTW, use emojis")
+  })
+
+  test("multiple hints use config prefix for header", () => {
+    const config: BtwConfig = {
+      ...DEFAULT_CONFIG,
+      injection: { ...DEFAULT_CONFIG.injection, userMessagePrefix: "Hey, " },
+    }
+    const result = buildUserHint(
+      [{ text: "a", pinned: false }, { text: "b", pinned: false }],
+      config,
+    )
+    expect(result).toContain("Hey:")
+    expect(result).toContain("1. a")
+    expect(result).toContain("2. b")
+  })
+})
+
+describe("isDebugEnabled with config", () => {
+  test("returns true when config.debug is true", () => {
+    const config = { ...DEFAULT_CONFIG, debug: true }
+    expect(isDebugEnabled(config)).toBe(true)
+  })
+
+  test("config.debug false overrides marker file", () => {
+    const config = { ...DEFAULT_CONFIG, debug: false }
+    // Config explicitly set to false takes priority over marker file
+    expect(isDebugEnabled(config)).toBe(false)
   })
 })
