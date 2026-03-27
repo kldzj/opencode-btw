@@ -10,7 +10,7 @@ Add to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-btw@latest"]
+  "plugin": ["opencode-btw"]
 }
 ```
 
