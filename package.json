@@ -2,14 +2,26 @@
   "name": "opencode-btw",
   "version": "0.4.0",
   "description": "Hint injection plugin for OpenCode — nudge the model mid-task without interrupting its flow",
-  "main": "src/plugin.ts",
+  "main": "index.ts",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.ts"
+  },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src/plugin.ts",
     "src/core.ts",
     "src/config.ts",
+    "src/runtime.ts",
+    "src/v2.ts",
+    "src/rpc.ts",
+    "src/tui.ts",
     "btw.schema.json",
     "LICENSE"
   ],
@@ -31,12 +43,23 @@
   },
   "homepage": "https://github.com/kldzj/opencode-btw#readme",
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "@opencode-ai/plugin": "^1.18.29",
+    "@opencode/plugin": "^2.0.18"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": { "optional": true },
+    "@opencode/plugin": { "optional": true }
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.32",
+    "@opencode/plugin": "2.0.18",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.3"
   }
 }
