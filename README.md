@@ -6,7 +6,18 @@ When the model is stuck in a loop or heading in the wrong direction, `/btw` lets
 
 ## Install
 
-Add to your `opencode.json`:
+Supports OpenCode **1.18.29+** and **2.0.18+**. The same default export exposes
+the V1 `server()` and V2 `setup()` entrypoints.
+
+For OpenCode 2, add to your `opencode.json`:
+
+```json
+{
+  "plugins": ["opencode-btw"]
+}
+```
+
+For OpenCode 1:
 
 ```json
 {
@@ -15,6 +26,12 @@ Add to your `opencode.json`:
 ```
 
 Restart OpenCode after adding the plugin.
+
+On V2, the package's `./tui` companion displays confirmation toasts and overrides
+the built-in `/btw` side-conversation command with this plugin's hint command.
+When using a remote server, enable the server plugin there and add
+`"plugins": ["opencode-btw"]` to the local `~/.config/opencode/cli.json` too.
+The server owns hints and config; notifications reach only the active session's CLI.
 
 ## Usage
 
@@ -51,12 +68,19 @@ Transient hints auto-clear in two ways:
 
 ## How it works
 
-1. `/btw <hint>` saves the hint to disk and cancels the command before an LLM call is made
+1. `/btw <hint>` saves the hint to disk without making an LLM call (V1 cancels the automatic prompt; V2 uses a command executor)
 2. On every subsequent LLM call, hints are prepended to the system prompt and appended to the last user message
 3. When the model's turn ends, transient hints are automatically removed while pinned hints stay
 4. `/btw clear` removes all hints, `/btw clear last` removes the most recent one, `/btw clear <N>` removes a specific hint by its number
 
 Hints are **session-scoped** (each session has its own) and **project-scoped** (stored under a hash of the project directory). All data lives in `~/.cache/opencode/btw/`. Hint files are cleaned up automatically when sessions are deleted.
+
+On V2, injection runs in the primary session's `context` hook, including tool-loop
+continuations. It changes only the outgoing model request, not stored messages,
+and preserves attachments. Title, compaction, and transient generation requests
+are not modified. Successful question tools and `session.idle` events clear
+transient hints according to `autoClear`; `session.deleted` removes all hints.
+The event subscription is aborted when the plugin unloads.
 
 ## Configuration
 
@@ -148,12 +172,14 @@ You can also use `XDG_CONFIG_HOME` to customize the global config location: `$XD
 
 ## Known issues
 
-- **Web app error toast**: On the web app, `/btw` commands show a brief "command failed" error toast. This is cosmetic — the hint is saved and injected correctly. However, this also means `/btw` (status) can't display active hints on the web app — use the TUI for that. See [anomalyco/opencode#9306](https://github.com/anomalyco/opencode/issues/9306) for upstream tracking.
+- **V1 web app error toast**: On the V1 web app, `/btw` commands show a brief "command failed" error toast. This is cosmetic — the hint is saved and injected correctly. However, this also means `/btw` (status) can't display active hints on the web app — use the TUI for that. See [anomalyco/opencode#9306](https://github.com/anomalyco/opencode/issues/9306) for upstream tracking.
+- **V2 clients**: The CLI companion owns toasts and the `/btw` override. Other clients can call the server's `btw` command but must subscribe to the plugin's RPC notifications to display confirmations/status; their built-in `/btw` UI is not replaced.
 
 ## Development
 
 ```bash
 bun test        # run test suite
+bun run typecheck
 ```
 
 ## License

@@ -343,9 +343,10 @@ export function validateConfig(data: Record<string, unknown>): ConfigWarning[] {
 
 export interface ConfigContext {
   directory: string
-  client: {
+  warn?: (message: string) => void
+  client?: {
     tui: {
-      showToast: (opts: { body: { message: string; variant: string; duration: number } }) => Promise<void>
+      showToast: (opts: { body: { message: string; variant: "info"; duration: number } }) => Promise<unknown>
     }
   }
 }
@@ -391,10 +392,14 @@ export function getConfig(ctx: ConfigContext): BtwConfig {
 // ─── Scheduled warnings ─────────────────────────────────────────────
 
 function scheduleWarning(ctx: ConfigContext, message: string): void {
+  if (ctx.warn) {
+    ctx.warn(message)
+    return
+  }
   // Delay warnings so they don't fire during plugin initialization
   setTimeout(async () => {
     try {
-      await ctx.client.tui.showToast({
+      await ctx.client?.tui.showToast({
         body: { message, variant: "info", duration: 7000 },
       })
     } catch {}

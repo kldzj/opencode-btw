@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import { existsSync, mkdirSync, unlinkSync } from "fs"
+import { readFile, writeFile } from "fs/promises"
 import { DEFAULT_SYSTEM_INSTRUCTIONS, type BtwConfig } from "./config"
 
 export interface HintEntry {
@@ -81,24 +82,21 @@ export async function toggleDebug(): Promise<boolean> {
     return false
   } else {
     ensureDir(`${process.env.HOME}/.cache/opencode/btw`)
-    await Bun.write(debugMarkerPath(), "")
+    await writeFile(debugMarkerPath(), "")
     return true
   }
 }
 
 export async function readHints(filePath: string): Promise<HintEntry[]> {
   try {
-    const file = Bun.file(filePath)
-    if (await file.exists()) {
-      const data = await file.json()
-      // Handle new array format
-      if (Array.isArray(data?.hints) && data.hints.length > 0) {
-        return data.hints as HintEntry[]
-      }
-      // Handle legacy single-hint format
-      if (data?.text) {
-        return [{ text: data.text, pinned: data.pinned ?? false }]
-      }
+    const data = JSON.parse(await readFile(filePath, "utf8"))
+    // Handle new array format
+    if (Array.isArray(data?.hints) && data.hints.length > 0) {
+      return data.hints as HintEntry[]
+    }
+    // Handle legacy single-hint format
+    if (data?.text) {
+      return [{ text: data.text, pinned: data.pinned ?? false }]
     }
   } catch {}
   return []
@@ -112,7 +110,7 @@ export async function writeHints(
     await clearHints(filePath)
     return
   }
-  await Bun.write(filePath, JSON.stringify({ hints } satisfies HintFile))
+  await writeFile(filePath, JSON.stringify({ hints } satisfies HintFile))
 }
 
 export async function addHint(
